@@ -160,6 +160,19 @@ def build_green_parameter_panel() -> dict:
     """Collect green cytoskeleton analysis parameters inside the green tab."""
 
     st.subheader("Green Cytoskeleton Parameters")
+    analysis_target = st.radio(
+        "Analysis target",
+        options=["Cytoskeleton fibers only", "Estimated cell-covered area"],
+        index=1,
+        key="green_analysis_target",
+        horizontal=True,
+    )
+    st.caption(
+        "Cytoskeleton fibers only = detects fluorescent cytoskeleton pixels. "
+        "Estimated cell-covered area = estimates the larger cell-covered regions "
+        "enclosed or supported by cytoskeleton networks."
+    )
+
     left_col, right_col = st.columns(2)
 
     with left_col:
@@ -174,58 +187,72 @@ def build_green_parameter_panel() -> dict:
             "Manual green threshold slider",
             min_value=0,
             max_value=255,
-            value=35,
+            value=25,
             step=1,
             key="green_manual_threshold",
             help="Used only when green threshold mode is set to Manual.",
         )
         gaussian_kernel = st.selectbox(
             "Green Gaussian blur kernel",
-            options=[3, 5, 7, 9],
-            index=1,
+            options=[3, 5, 7],
+            index=0,
             key="green_gaussian_kernel",
         )
         use_background_subtraction = st.checkbox(
-            "Background subtraction / rolling ball approximation",
+            "Background subtraction",
             value=True,
             key="green_use_background_subtraction",
             help="Approximated with a large Gaussian blur background subtraction.",
         )
         background_kernel = st.selectbox(
             "Background blur kernel",
-            options=[21, 31, 51, 71],
+            options=[31, 51, 71, 101],
             index=2,
             key="green_background_kernel",
         )
-        morph_close_kernel = st.selectbox(
-            "Green morph close kernel size",
-            options=[5, 9, 15, 21, 31],
-            index=2,
-            key="green_morph_close_kernel",
+        morph_open_kernel = st.selectbox(
+            "Morph open kernel size",
+            options=[0, 3, 5],
+            index=0,
+            key="green_morph_open_kernel",
+            help="Use 0 to skip opening so weak fine fibers are preserved.",
+        )
+        fiber_close_kernel = st.selectbox(
+            "Fiber close kernel size",
+            options=[3, 5, 7, 9],
+            index=1,
+            key="green_fiber_close_kernel",
         )
 
     with right_col:
-        dilate_before_fill = st.checkbox(
-            "Dilate cytoskeleton before area fill",
-            value=True,
-            key="green_dilate_before_fill",
+        area_dilation_kernel = st.selectbox(
+            "Area estimation dilation kernel",
+            options=[5, 9, 13, 17, 21, 25],
+            index=3,
+            key="green_area_dilation_kernel",
         )
-        dilation_kernel = st.selectbox(
-            "Dilation kernel size",
-            options=[3, 5, 7, 9, 11],
+        area_close_kernel = st.selectbox(
+            "Area estimation close kernel",
+            options=[15, 25, 35, 45, 55],
             index=2,
-            key="green_dilation_kernel",
+            key="green_area_close_kernel",
         )
-        fill_enclosed_regions = st.checkbox(
-            "Fill enclosed regions",
+        fill_holes = st.checkbox(
+            "Fill holes",
             value=True,
-            key="green_fill_enclosed_regions",
+            key="green_fill_holes",
+        )
+        area_smoothing_kernel = st.selectbox(
+            "Area smoothing kernel",
+            options=[0, 9, 15, 21, 31],
+            index=2,
+            key="green_area_smoothing_kernel",
         )
         min_area = st.number_input(
-            "Minimum cell-covered area",
+            "Minimum estimated area",
             min_value=1,
-            value=3000,
-            step=100,
+            value=20000,
+            step=500,
             key="green_min_area",
         )
         exclude_edge_regions = st.checkbox(
@@ -242,15 +269,18 @@ def build_green_parameter_panel() -> dict:
         )
 
     return {
+        "analysis_target": analysis_target,
         "threshold_mode": threshold_mode,
         "manual_threshold": manual_threshold,
         "gaussian_kernel": gaussian_kernel,
         "use_background_subtraction": use_background_subtraction,
         "background_kernel": background_kernel,
-        "morph_close_kernel": morph_close_kernel,
-        "dilate_before_fill": dilate_before_fill,
-        "dilation_kernel": dilation_kernel,
-        "fill_enclosed_regions": fill_enclosed_regions,
+        "morph_open_kernel": morph_open_kernel,
+        "fiber_close_kernel": fiber_close_kernel,
+        "area_dilation_kernel": area_dilation_kernel,
+        "area_close_kernel": area_close_kernel,
+        "fill_holes": fill_holes,
+        "area_smoothing_kernel": area_smoothing_kernel,
         "min_area": int(min_area),
         "exclude_edge_regions": exclude_edge_regions,
         "edge_margin": int(edge_margin),
@@ -262,7 +292,7 @@ def show_green_metric_rows(summary_metrics: dict) -> None:
 
     first_row = st.columns(3)
     first_row[0].metric(
-        "Estimated cell-covered regions count",
+        "Estimated cell-covered region count",
         f"{summary_metrics['regions_count']}",
     )
     first_row[1].metric(
@@ -270,14 +300,14 @@ def show_green_metric_rows(summary_metrics: dict) -> None:
         f"{summary_metrics['total_estimated_cell_area_px']}",
     )
     first_row[2].metric(
-        "Mean estimated region area px",
-        f"{summary_metrics['mean_estimated_region_area_px']:.1f}",
+        "Mean estimated cell-covered area px",
+        f"{summary_metrics['mean_estimated_cell_area_px']:.1f}",
     )
 
     second_row = st.columns(3)
     second_row[0].metric(
-        "Total cytoskeleton pixel area px",
-        f"{summary_metrics['total_cytoskeleton_pixel_area_px']}",
+        "Total cytoskeleton fiber pixel area px",
+        f"{summary_metrics['total_cytoskeleton_fiber_pixel_area_px']}",
     )
     second_row[1].metric(
         "Mean green intensity inside estimated areas",
@@ -303,36 +333,30 @@ def show_green_image_grid(rgb_image, green_results: dict) -> None:
     row2 = st.columns(2)
     row2[0].image(
         green_results["green_enhanced"],
-        caption="Background-subtracted / Enhanced Green Channel",
+        caption="Enhanced Green Channel",
         use_container_width=True,
     )
     row2[1].image(
-        green_results["cytoskeleton_binary_mask"],
-        caption="Cytoskeleton Binary Mask",
+        green_results["cytoskeleton_fiber_mask"],
+        caption="Cytoskeleton Fiber Mask",
         use_container_width=True,
     )
 
-    row3 = st.columns(2)
-    row3[0].image(
-        green_results["cytoskeleton_cleaned_mask"],
-        caption="Cleaned Cytoskeleton Mask",
-        use_container_width=True,
-    )
-    row3[1].image(
+    st.image(
         green_results["estimated_cell_area_mask"],
         caption="Estimated Cell-covered Area Mask",
         use_container_width=True,
     )
 
-    row4 = st.columns(2)
-    row4[0].image(
-        green_results["overlay_cytoskeleton"],
-        caption="Overlay: Cytoskeleton",
+    row3 = st.columns(2)
+    row3[0].image(
+        green_results["overlay_fibers"],
+        caption="Overlay: Cytoskeleton Fibers",
         use_container_width=True,
     )
-    row4[1].image(
+    row3[1].image(
         green_results["overlay_estimated_area"],
-        caption="Overlay: Estimated Cell-covered Area",
+        caption="Overlay: Estimated Cell-covered Areas",
         use_container_width=True,
     )
 
@@ -350,9 +374,9 @@ def show_green_downloads(green_df: pd.DataFrame, green_results: dict) -> None:
         disabled=green_df.empty,
     )
     first_row[1].download_button(
-        label="Download cytoskeleton mask PNG",
-        data=image_to_png_bytes(green_results["cytoskeleton_cleaned_mask"]),
-        file_name="green_cytoskeleton_mask.png",
+        label="Download cytoskeleton fiber mask PNG",
+        data=image_to_png_bytes(green_results["cytoskeleton_fiber_mask"]),
+        file_name="green_cytoskeleton_fiber_mask.png",
         mime="image/png",
     )
     first_row[2].download_button(
@@ -364,9 +388,9 @@ def show_green_downloads(green_df: pd.DataFrame, green_results: dict) -> None:
 
     second_row = st.columns(2)
     second_row[0].download_button(
-        label="Download green cytoskeleton overlay PNG",
-        data=image_to_png_bytes(green_results["overlay_cytoskeleton"]),
-        file_name="green_cytoskeleton_overlay.png",
+        label="Download overlay fibers PNG",
+        data=image_to_png_bytes(green_results["overlay_fibers"]),
+        file_name="green_cytoskeleton_fibers_overlay.png",
         mime="image/png",
     )
     second_row[1].download_button(
@@ -432,6 +456,16 @@ def main() -> None:
 
     with green_tab:
         green_params = build_green_parameter_panel()
+        if green_params["analysis_target"] == "Cytoskeleton fibers only":
+            st.info(
+                "Fiber-only view highlights fluorescent cytoskeleton pixels. "
+                "Individual fiber fragments are not assigned Region_ID labels."
+            )
+        else:
+            st.info(
+                "Estimated area view assigns Region_ID labels only to large cell-covered regions "
+                "derived from the cytoskeleton network."
+            )
 
         with st.spinner("Analyzing green cytoskeleton area..."):
             green_results = analyze_green_cytoskeleton_area(
@@ -441,16 +475,22 @@ def main() -> None:
                 gaussian_kernel=green_params["gaussian_kernel"],
                 use_background_subtraction=green_params["use_background_subtraction"],
                 background_kernel=green_params["background_kernel"],
-                morph_close_kernel=green_params["morph_close_kernel"],
-                dilate_before_fill=green_params["dilate_before_fill"],
-                dilation_kernel=green_params["dilation_kernel"],
-                fill_enclosed_regions=green_params["fill_enclosed_regions"],
+                morph_open_kernel=green_params["morph_open_kernel"],
+                fiber_close_kernel=green_params["fiber_close_kernel"],
+                area_dilation_kernel=green_params["area_dilation_kernel"],
+                area_close_kernel=green_params["area_close_kernel"],
+                fill_holes=green_params["fill_holes"],
+                area_smoothing_kernel=green_params["area_smoothing_kernel"],
                 min_area=green_params["min_area"],
                 exclude_edge_regions=green_params["exclude_edge_regions"],
                 edge_margin=green_params["edge_margin"],
             )
 
         green_df = green_results["results_dataframe"]
+        st.caption(
+            "Region IDs and statistics represent estimated cell-covered areas. "
+            "The cytoskeleton fiber mask is shown for fluorescence-pixel inspection and coverage metrics."
+        )
         show_green_metric_rows(green_results["summary_metrics"])
         st.divider()
         show_green_image_grid(rgb_image, green_results)

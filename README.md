@@ -25,13 +25,16 @@
   - Centroid
   - Mean, max, and integrated blue intensity
   - Edge nucleus flag
-- Estimate green cytoskeleton-covered cell area with traditional image processing:
+- Estimate green cytoskeleton-covered cell area with two traditional image-processing layers:
+  - Cytoskeleton fiber detection: detects fluorescent cytoskeleton pixels.
+  - Estimated cell-covered area estimation: thickens, connects, fills, and filters cytoskeleton networks to approximate larger covered regions.
   - Green channel extraction
   - Optional large Gaussian background subtraction
-  - Gaussian blur denoising
+  - Small Gaussian blur denoising to preserve fine fibers
   - Otsu or manual thresholding
-  - Morphological open and close
-  - Optional dilation before cell area filling
+  - Optional light morphological open for fiber noise removal
+  - Small fiber close for broken cytoskeleton lines
+  - Larger dilation and close for cell-covered area estimation
   - OpenCV flood-fill based enclosed-region filling
   - Connected component filtering and optional edge exclusion
 - Quantify each estimated green cell-covered region:
@@ -39,7 +42,7 @@
   - Bounding box
   - Centroid
   - Mean, max, and integrated green intensity
-  - Cytoskeleton pixel area
+  - Cytoskeleton fiber pixel area inside the estimated region
   - Cytoskeleton coverage ratio
   - Edge region flag
 - Download:
@@ -82,6 +85,10 @@ Then open the local Streamlit URL shown in the terminal.
 ## Notes for Future Extension
 
 The UI is kept in `app.py`, while the image-processing logic is isolated in `image_analysis.py`.
+
+The Green Cytoskeleton Area workflow is a display-oriented traditional image
+processing estimate. It is not a deep learning single-cell segmentation model:
+fiber pixels and estimated cell-covered areas are reported as separate layers.
 
 The current channel utilities are designed so future modules can add:
 
