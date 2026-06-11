@@ -393,8 +393,15 @@ def main() -> None:
         accept_multiple_files=False,
     )
 
+    blue_tab, green_tab = st.tabs(["Blue Channel Nuclei Detection", "Green Cytoskeleton Area"])
+
     if uploaded_file is None:
-        st.info("Upload a PNG, JPG, JPEG, TIF, or TIFF image to start analysis.")
+        with blue_tab:
+            st.info("Upload a PNG, JPG, JPEG, TIF, or TIFF image to start blue nuclei analysis.")
+        with green_tab:
+            st.info(
+                "Upload a PNG, JPG, JPEG, TIF, or TIFF image to start green cytoskeleton area analysis."
+            )
         return
 
     try:
@@ -404,8 +411,6 @@ def main() -> None:
     except Exception as exc:
         st.error(f"Could not read image file: {exc}")
         return
-
-    blue_tab, green_tab = st.tabs(["Blue Channel Nuclei Detection", "Green Cytoskeleton Area"])
 
     with blue_tab:
         with st.spinner("Analyzing blue fluorescence nuclei..."):
