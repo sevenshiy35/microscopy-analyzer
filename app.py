@@ -19,6 +19,7 @@ from image_analysis import (
     NucleusAnalysisConfig,
     analyze_blue_nuclei,
     analyze_green_cytoskeleton_area,
+    analyze_red_protein_puncta,
     dataframe_to_csv_bytes,
     image_to_png_bytes,
     load_uploaded_image_as_rgb,
@@ -26,6 +27,7 @@ from image_analysis import (
 from parameter_config import (
     LANGUAGE_OPTIONS,
     apply_green_preset,
+    apply_red_preset,
     apply_profile,
     build_profile,
     guide_lines,
@@ -66,7 +68,12 @@ def help_for(key: str) -> str:
 def render_parameter_guide(module: str) -> None:
     """Show a concise localized parameter guide for the active module."""
 
-    guide_key = "blue_guide" if module == "blue" else "green_guide"
+    guide_key_by_module = {
+        "blue": "blue_guide",
+        "green": "green_guide",
+        "red": "red_guide",
+    }
+    guide_key = guide_key_by_module[module]
     guide_title = (
         "Parameter Guide"
         if current_language() == "English"
@@ -84,6 +91,14 @@ def on_green_preset_change() -> None:
     preset_name = st.session_state.get("green_preset", "Balanced")
     if preset_name != "Custom":
         apply_green_preset(st.session_state, preset_name)
+
+
+def on_red_preset_change() -> None:
+    """Apply non-custom red presets to stable session-state keys."""
+
+    preset_name = st.session_state.get("red_preset", "Balanced")
+    if preset_name != "Custom":
+        apply_red_preset(st.session_state, preset_name)
 
 
 def on_profile_upload() -> None:
@@ -502,6 +517,164 @@ def build_green_parameter_panel() -> dict:
     }
 
 
+def build_red_parameter_panel() -> dict:
+    """Collect red protein puncta analysis parameters from the sidebar."""
+
+    with st.sidebar.expander("Red Protein Puncta", expanded=True):
+        preset_name = st.selectbox(
+            label("red_preset"),
+            options=["Conservative", "Balanced", "Sensitive", "Custom"],
+            key="red_preset",
+            on_change=on_red_preset_change,
+            help=help_for("red_preset"),
+        )
+        st.caption(
+            "Conservative: fewer false positives and stronger dots. "
+            "Balanced: recommended default for protein puncta. "
+            "Sensitive: keeps weaker puncta but may include more background."
+        )
+        st.caption(
+            "Target protein puncta are compact red dots; long red nanofiber-like "
+            "structures are treated as background to suppress."
+        )
+
+        threshold_mode = st.radio(
+            label("red_threshold_mode"),
+            options=["Otsu", "Manual"],
+            key="red_threshold_mode",
+            help=help_for("red_threshold_mode"),
+        )
+        manual_threshold = st.slider(
+            label("red_manual_threshold"),
+            min_value=0,
+            max_value=255,
+            step=1,
+            key="red_manual_threshold",
+            help=help_for("red_manual_threshold"),
+        )
+        use_background_subtraction = st.checkbox(
+            label("red_background_subtraction"),
+            key="red_background_subtraction",
+            help=help_for("red_background_subtraction"),
+        )
+        background_kernel = st.selectbox(
+            label("red_background_blur_kernel"),
+            options=[21, 31, 51, 71],
+            key="red_background_blur_kernel",
+            help=help_for("red_background_blur_kernel"),
+        )
+        enhancement_method = st.selectbox(
+            label("red_enhancement_method"),
+            options=["White top-hat", "LoG-like blob enhancement", "None"],
+            key="red_enhancement_method",
+            help=help_for("red_enhancement_method"),
+        )
+        top_hat_kernel = st.selectbox(
+            label("red_top_hat_kernel"),
+            options=[3, 5, 7, 9, 11, 15],
+            key="red_top_hat_kernel",
+            help=help_for("red_top_hat_kernel"),
+        )
+        remove_fibers = st.checkbox(
+            label("red_remove_fibers"),
+            key="red_remove_fibers",
+            help=help_for("red_remove_fibers"),
+        )
+        fiber_removal_method = st.selectbox(
+            label("red_fiber_removal_method"),
+            options=["Shape filtering only", "Multi-angle line suppression", "Both"],
+            key="red_fiber_removal_method",
+            help=help_for("red_fiber_removal_method"),
+        )
+        line_suppression_length = st.selectbox(
+            label("red_line_suppression_length"),
+            options=[15, 21, 31, 41, 51],
+            key="red_line_suppression_length",
+            help=help_for("red_line_suppression_length"),
+        )
+        min_area = st.number_input(
+            label("red_min_area"),
+            min_value=1,
+            step=1,
+            key="red_min_area",
+            help=help_for("red_min_area"),
+        )
+        max_area = st.number_input(
+            label("red_max_area"),
+            min_value=1,
+            step=10,
+            key="red_max_area",
+            help=help_for("red_max_area"),
+        )
+        min_circularity = st.slider(
+            label("red_min_circularity"),
+            min_value=0.0,
+            max_value=1.0,
+            step=0.01,
+            key="red_min_circularity",
+            help=help_for("red_min_circularity"),
+        )
+        max_aspect_ratio = st.number_input(
+            label("red_max_aspect_ratio"),
+            min_value=1.0,
+            step=0.1,
+            key="red_max_aspect_ratio",
+            help=help_for("red_max_aspect_ratio"),
+        )
+        min_mean_intensity = st.number_input(
+            label("red_min_mean_intensity"),
+            min_value=0,
+            step=1,
+            key="red_min_mean_intensity",
+            help=help_for("red_min_mean_intensity"),
+        )
+        exclude_edge_puncta = st.checkbox(
+            label("red_exclude_edge_puncta"),
+            key="red_exclude_edge_puncta",
+            help=help_for("red_exclude_edge_puncta"),
+        )
+        edge_margin = st.number_input(
+            label("red_edge_margin"),
+            min_value=0,
+            step=1,
+            key="red_edge_margin",
+            help=help_for("red_edge_margin"),
+        )
+        merge_nearby_puncta = st.checkbox(
+            label("red_merge_nearby_puncta"),
+            key="red_merge_nearby_puncta",
+            help=help_for("red_merge_nearby_puncta"),
+        )
+        merge_distance = st.selectbox(
+            label("red_merge_distance"),
+            options=[1, 2, 3, 5],
+            key="red_merge_distance",
+            help=help_for("red_merge_distance"),
+        )
+
+    return {
+        "preset_name": preset_name,
+        "threshold_mode": threshold_mode,
+        "manual_threshold": manual_threshold,
+        "use_background_subtraction": use_background_subtraction,
+        "background_kernel": background_kernel,
+        "enhancement_method": enhancement_method,
+        "top_hat_kernel": top_hat_kernel,
+        "remove_fibers": remove_fibers,
+        "fiber_removal_method": fiber_removal_method,
+        "line_suppression_length": line_suppression_length,
+        "min_area": int(min_area),
+        "max_area": int(max_area),
+        "min_circularity": float(min_circularity),
+        "max_aspect_ratio": float(max_aspect_ratio),
+        "min_mean_intensity": float(min_mean_intensity),
+        "exclude_edge_puncta": exclude_edge_puncta,
+        "edge_margin": int(edge_margin),
+        "merge_nearby_puncta": merge_nearby_puncta,
+        "merge_distance": int(merge_distance),
+    }
+
+
 def show_green_metric_rows(summary_metrics: dict) -> None:
     """Display top-level green cytoskeleton summary metrics."""
 
@@ -671,6 +844,153 @@ def show_green_downloads(green_df: pd.DataFrame) -> None:
     )
 
 
+def show_red_metric_rows(summary_metrics: dict) -> None:
+    """Display top-level red protein puncta summary metrics."""
+
+    first_row = st.columns(3)
+    first_row[0].metric(
+        "Detected protein puncta count",
+        f"{summary_metrics['puncta_count']}",
+    )
+    first_row[1].metric(
+        "Total puncta area px",
+        f"{summary_metrics['total_puncta_area_px']}",
+    )
+    first_row[2].metric(
+        "Mean puncta area px",
+        f"{summary_metrics['mean_puncta_area_px']:.1f}",
+    )
+
+    second_row = st.columns(3)
+    second_row[0].metric(
+        "Mean red intensity in puncta",
+        f"{summary_metrics['mean_red_intensity_in_puncta']:.2f}",
+    )
+    second_row[1].metric(
+        "Total integrated red intensity",
+        f"{summary_metrics['total_integrated_red_intensity']:.2f}",
+    )
+    second_row[2].metric(
+        "Fiber background pixel area px",
+        f"{summary_metrics['fiber_background_pixel_area_px']}",
+    )
+
+    st.metric(
+        "Puncta-to-fiber area ratio",
+        f"{summary_metrics['puncta_to_fiber_area_ratio']:.4f}",
+    )
+
+
+def show_red_image_grid(rgb_image, red_results: dict) -> None:
+    """Render red protein puncta analysis image outputs."""
+
+    row1 = st.columns(2)
+    with row1[0]:
+        st.image(rgb_image, caption="Original Image", use_container_width=True)
+        st.download_button(
+            "Download Original Image PNG",
+            data=image_to_png_bytes(rgb_image),
+            file_name="original_image.png",
+            mime="image/png",
+            key="download_red_original_image",
+        )
+    with row1[1]:
+        st.image(
+            red_results["red_channel_display"],
+            caption="Red Channel",
+            use_container_width=True,
+        )
+        st.download_button(
+            "Download Red Channel PNG",
+            data=image_to_png_bytes(red_results["red_channel_display"]),
+            file_name="red_channel.png",
+            mime="image/png",
+            key="download_red_channel",
+        )
+
+    row2 = st.columns(2)
+    with row2[0]:
+        st.image(
+            red_results["red_enhanced"],
+            caption="Enhanced Red Channel",
+            use_container_width=True,
+        )
+        st.download_button(
+            "Download Enhanced Red Channel PNG",
+            data=image_to_png_bytes(red_results["red_enhanced"]),
+            file_name="enhanced_red_channel.png",
+            mime="image/png",
+            key="download_red_enhanced",
+        )
+    with row2[1]:
+        st.image(
+            red_results["fiber_background_mask"],
+            caption="Fiber Background Mask",
+            use_container_width=True,
+        )
+        st.download_button(
+            "Download Fiber Background Mask PNG",
+            data=image_to_png_bytes(red_results["fiber_background_mask"]),
+            file_name="red_fiber_background_mask.png",
+            mime="image/png",
+            key="download_red_fiber_background_mask",
+        )
+
+    row3 = st.columns(2)
+    with row3[0]:
+        st.image(
+            red_results["puncta_candidate_mask"],
+            caption="Puncta Candidate Mask",
+            use_container_width=True,
+        )
+        st.download_button(
+            "Download Puncta Candidate Mask PNG",
+            data=image_to_png_bytes(red_results["puncta_candidate_mask"]),
+            file_name="red_puncta_candidate_mask.png",
+            mime="image/png",
+            key="download_red_puncta_candidate_mask",
+        )
+    with row3[1]:
+        st.image(
+            red_results["puncta_cleaned_mask"],
+            caption="Cleaned Puncta Mask",
+            use_container_width=True,
+        )
+        st.download_button(
+            "Download Cleaned Puncta Mask PNG",
+            data=image_to_png_bytes(red_results["puncta_cleaned_mask"]),
+            file_name="red_puncta_cleaned_mask.png",
+            mime="image/png",
+            key="download_red_puncta_cleaned_mask",
+        )
+
+    st.image(
+        red_results["overlay_puncta"],
+        caption="Overlay: Detected Protein Puncta",
+        use_container_width=True,
+    )
+    st.download_button(
+        "Download Red Puncta Overlay PNG",
+        data=image_to_png_bytes(red_results["overlay_puncta"]),
+        file_name="red_protein_puncta_overlay.png",
+        mime="image/png",
+        key="download_red_puncta_overlay",
+    )
+
+
+def show_red_downloads(red_df: pd.DataFrame) -> None:
+    """Expose red protein puncta CSV downloads."""
+
+    st.subheader("Download Red Protein Puncta Results")
+    st.download_button(
+        label="Download red protein puncta statistics CSV",
+        data=dataframe_to_csv_bytes(red_df),
+        file_name="red_protein_puncta_statistics.csv",
+        mime="text/csv",
+        disabled=red_df.empty,
+    )
+
+
 def main() -> None:
     """Run the Streamlit app."""
 
@@ -685,7 +1005,11 @@ def main() -> None:
 
     analysis_mode = st.segmented_control(
         label("analysis_module"),
-        options=["Blue Channel Nuclei Detection", "Green Cytoskeleton Area"],
+        options=[
+            "Blue Channel Nuclei Detection",
+            "Green Cytoskeleton Area",
+            "Red Protein Puncta",
+        ],
         selection_mode="single",
         key="analysis_mode",
     )
@@ -695,12 +1019,16 @@ def main() -> None:
     st.sidebar.header(label("analysis_parameters"))
     config = None
     green_params = None
+    red_params = None
     if analysis_mode == "Blue Channel Nuclei Detection":
         render_parameter_guide("blue")
         config = build_sidebar_config()
-    else:
+    elif analysis_mode == "Green Cytoskeleton Area":
         render_parameter_guide("green")
         green_params = build_green_parameter_panel()
+    else:
+        render_parameter_guide("red")
+        red_params = build_red_parameter_panel()
 
     uploaded_file = st.file_uploader(
         "Upload a fluorescence microscopy image",
@@ -711,9 +1039,13 @@ def main() -> None:
     if uploaded_file is None:
         if analysis_mode == "Blue Channel Nuclei Detection":
             st.info("Upload a PNG, JPG, JPEG, TIF, or TIFF image to start blue nuclei analysis.")
-        else:
+        elif analysis_mode == "Green Cytoskeleton Area":
             st.info(
                 "Upload a PNG, JPG, JPEG, TIF, or TIFF image to start green cytoskeleton area analysis."
+            )
+        else:
+            st.info(
+                "Upload a PNG, JPG, JPEG, TIF, or TIFF image to start red protein puncta analysis."
             )
         return
 
@@ -742,7 +1074,7 @@ def main() -> None:
             st.dataframe(stats_df, use_container_width=True, hide_index=True)
 
         show_downloads(stats_df)
-    else:
+    elif analysis_mode == "Green Cytoskeleton Area":
         if green_params["analysis_target"] == "Cytoskeleton fibers only":
             st.info(
                 "Fiber-only view highlights fluorescent cytoskeleton pixels. "
@@ -799,6 +1131,51 @@ def main() -> None:
             st.dataframe(green_df, use_container_width=True, hide_index=True)
 
         show_green_downloads(green_df)
+    else:
+        st.info(
+            "Red Protein Puncta detects compact target-protein dots while suppressing "
+            "long red nanofiber-like background."
+        )
+
+        with st.spinner("Analyzing red protein puncta..."):
+            red_results = analyze_red_protein_puncta(
+                rgb_image,
+                threshold_mode=red_params["threshold_mode"],
+                manual_threshold=red_params["manual_threshold"],
+                use_background_subtraction=red_params["use_background_subtraction"],
+                background_kernel=red_params["background_kernel"],
+                enhancement_method=red_params["enhancement_method"],
+                top_hat_kernel=red_params["top_hat_kernel"],
+                remove_fibers=red_params["remove_fibers"],
+                fiber_removal_method=red_params["fiber_removal_method"],
+                line_suppression_length=red_params["line_suppression_length"],
+                min_area=red_params["min_area"],
+                max_area=red_params["max_area"],
+                min_circularity=red_params["min_circularity"],
+                max_aspect_ratio=red_params["max_aspect_ratio"],
+                min_mean_intensity=red_params["min_mean_intensity"],
+                exclude_edge_puncta=red_params["exclude_edge_puncta"],
+                edge_margin=red_params["edge_margin"],
+                merge_nearby_puncta=red_params["merge_nearby_puncta"],
+                merge_distance=red_params["merge_distance"],
+            )
+
+        red_df = red_results["results_dataframe"]
+        st.caption(
+            "Protein puncta IDs and statistics are computed from compact red components "
+            "after optional fiber suppression and shape filtering."
+        )
+        show_red_metric_rows(red_results["summary_metrics"])
+        st.divider()
+        show_red_image_grid(rgb_image, red_results)
+
+        st.subheader("Red Protein Puncta Statistics")
+        if red_df.empty:
+            st.warning("No red protein puncta were detected with the current parameters.")
+        else:
+            st.dataframe(red_df, use_container_width=True, hide_index=True)
+
+        show_red_downloads(red_df)
 
 
 if __name__ == "__main__":

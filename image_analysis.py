@@ -103,6 +103,12 @@ def extract_channel(rgb_image: np.ndarray, channel: Literal["red", "green", "blu
     return rgb_image[:, :, channel_indices[channel]].copy()
 
 
+def normalize_mode_name(mode: str) -> str:
+    """Normalize UI option text for analysis functions."""
+
+    return mode.strip().lower().replace("-", "_").replace(" ", "_")
+
+
 def threshold_channel(
     channel_image: np.ndarray,
     mode: ThresholdMode,
@@ -719,6 +725,182 @@ def analyze_green_cytoskeleton_area(
     }
 
 
+def analyze_red_protein_puncta(
+    image_rgb: np.ndarray,
+    threshold_mode: str = "manual",
+    manual_threshold: int = 40,
+    use_background_subtraction: bool = True,
+    background_kernel: int = 51,
+    enhancement_method: str = "white_tophat",
+    top_hat_kernel: int = 7,
+    remove_fibers: bool = True,
+    fiber_removal_method: str = "both",
+    line_suppression_length: int = 31,
+    min_area: int = 3,
+    max_area: int = 300,
+    min_circularity: float = 0.35,
+    max_aspect_ratio: float = 3.0,
+    min_mean_intensity: float = 20,
+    exclude_edge_puncta: bool = False,
+    edge_margin: int = 3,
+    merge_nearby_puncta: bool = False,
+    merge_distance: int = 2,
+) -> dict[str, np.ndarray | pd.DataFrame | dict[str, float | int]]:
+    """
+    Detect compact red target-protein puncta while suppressing red nanofibers.
+
+    The detector enhances small bright blobs, optionally identifies long fiber
+    background, then keeps connected components with puncta-like shape and
+    intensity statistics.
+    """
+
+    rgb_uint8 = normalize_to_uint8(image_rgb)
+    red_channel = extract_channel(rgb_uint8, "red")
+
+    if use_background_subtraction:
+        bg_size = ensure_odd_kernel_size(background_kernel)
+        background = cv2.GaussianBlur(red_channel, (bg_size, bg_size), 0)
+        red_preprocessed = normalize_to_uint8(cv2.subtract(red_channel, background))
+    else:
+        red_preprocessed = red_channel.copy()
+
+    red_enhanced = enhance_red_puncta(
+        red_preprocessed=red_preprocessed,
+        enhancement_method=enhancement_method,
+        top_hat_kernel=top_hat_kernel,
+    )
+
+    method = normalize_mode_name(fiber_removal_method)
+    if remove_fibers and method in {"multi_angle_line_suppression", "both"}:
+        fiber_background_mask = detect_red_fiber_background(
+            red_preprocessed,
+            line_suppression_length,
+        )
+    else:
+        fiber_background_mask = np.zeros_like(red_channel)
+
+    mode = "Otsu" if normalize_mode_name(threshold_mode) == "otsu" else "Manual"
+    puncta_candidate_mask, threshold_value = threshold_channel(
+        red_enhanced,
+        mode,
+        manual_threshold,
+    )
+
+    if remove_fibers and method in {"multi_angle_line_suppression", "both"}:
+        puncta_candidate_mask[fiber_background_mask > 0] = 0
+
+    if merge_nearby_puncta:
+        merge_size = max(1, int(merge_distance))
+        merge_kernel_size = ensure_odd_kernel_size(merge_size)
+        merge_kernel = cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE,
+            (merge_kernel_size, merge_kernel_size),
+        )
+        puncta_candidate_mask = cv2.morphologyEx(
+            puncta_candidate_mask,
+            cv2.MORPH_CLOSE,
+            merge_kernel,
+        )
+
+    component_count, labels, stats, centroids = cv2.connectedComponentsWithStats(
+        puncta_candidate_mask,
+        connectivity=8,
+    )
+
+    puncta_cleaned_mask = np.zeros_like(puncta_candidate_mask)
+    overlay_puncta = rgb_uint8.copy()
+    image_height, image_width = puncta_candidate_mask.shape
+    records: list[dict[str, float | int | bool]] = []
+    puncta_id = 1
+
+    for component_label in range(1, component_count):
+        x = int(stats[component_label, cv2.CC_STAT_LEFT])
+        y = int(stats[component_label, cv2.CC_STAT_TOP])
+        width = int(stats[component_label, cv2.CC_STAT_WIDTH])
+        height = int(stats[component_label, cv2.CC_STAT_HEIGHT])
+        area = int(stats[component_label, cv2.CC_STAT_AREA])
+        centroid_x, centroid_y = centroids[component_label]
+
+        if area < int(min_area) or area > int(max_area):
+            continue
+
+        aspect_ratio = float(max(width, height) / max(1, min(width, height)))
+        component_mask = (labels == component_label).astype(np.uint8) * 255
+        contours, _ = cv2.findContours(component_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        perimeter = float(sum(cv2.arcLength(contour, True) for contour in contours))
+        circularity = float((4.0 * np.pi * area) / (perimeter * perimeter)) if perimeter else 0.0
+
+        overlaps_fiber = bool(np.any((fiber_background_mask > 0) & (labels == component_label)))
+        is_edge_puncta = touches_or_near_edge(
+            x=x,
+            y=y,
+            width=width,
+            height=height,
+            image_width=image_width,
+            image_height=image_height,
+            edge_margin=edge_margin,
+        )
+
+        mean_red = float(cv2.mean(red_channel, mask=component_mask)[0])
+        max_red = int(red_channel[labels == component_label].max())
+        integrated_red = float(red_channel[labels == component_label].sum())
+
+        shape_filter_active = remove_fibers and method in {"shape_filtering_only", "both"}
+        if shape_filter_active:
+            if circularity < float(min_circularity) or aspect_ratio > float(max_aspect_ratio):
+                continue
+        else:
+            if circularity < float(min_circularity):
+                continue
+
+        if mean_red < float(min_mean_intensity):
+            continue
+        if remove_fibers and overlaps_fiber:
+            continue
+        if exclude_edge_puncta and is_edge_puncta:
+            continue
+
+        puncta_cleaned_mask[labels == component_label] = 255
+        radius = int(np.ceil(np.sqrt(area / np.pi))) + 2
+        draw_puncta_annotation(overlay_puncta, centroid_x, centroid_y, radius, puncta_id)
+
+        records.append(
+            {
+                "Puncta_ID": puncta_id,
+                "Area_px": area,
+                "Centroid_X": round(float(centroid_x), 2),
+                "Centroid_Y": round(float(centroid_y), 2),
+                "Bounding_Box_X": x,
+                "Bounding_Box_Y": y,
+                "Bounding_Box_W": width,
+                "Bounding_Box_H": height,
+                "Mean_Red_Intensity": round(mean_red, 2),
+                "Max_Red_Intensity": max_red,
+                "Integrated_Red_Intensity": round(integrated_red, 2),
+                "Circularity": round(circularity, 4),
+                "Aspect_Ratio": round(aspect_ratio, 4),
+                "Overlaps_Fiber_Background": overlaps_fiber,
+                "Is_Edge_Puncta": bool(is_edge_puncta),
+            }
+        )
+        puncta_id += 1
+
+    results_dataframe = pd.DataFrame.from_records(records, columns=red_statistics_columns())
+    summary_metrics = summarize_red_results(results_dataframe, fiber_background_mask)
+    summary_metrics["threshold_value"] = float(threshold_value)
+
+    return {
+        "red_channel_display": red_channel,
+        "red_enhanced": red_enhanced,
+        "fiber_background_mask": fiber_background_mask,
+        "puncta_candidate_mask": puncta_candidate_mask,
+        "puncta_cleaned_mask": puncta_cleaned_mask,
+        "overlay_puncta": overlay_puncta,
+        "results_dataframe": results_dataframe,
+        "summary_metrics": summary_metrics,
+    }
+
+
 def draw_component_annotation(
     overlay_rgb: np.ndarray,
     component_mask: np.ndarray,
@@ -806,6 +988,91 @@ def make_weak_rescue_overlay(rgb_image: np.ndarray, rescue_mask: np.ndarray) -> 
     return overlay
 
 
+def create_line_kernel(length: int, angle_degrees: float) -> np.ndarray:
+    """Create a binary line structuring element at a given angle."""
+
+    size = ensure_odd_kernel_size(length)
+    kernel = np.zeros((size, size), dtype=np.uint8)
+    center = size // 2
+    radians = np.deg2rad(angle_degrees)
+    dx = int(round(np.cos(radians) * center))
+    dy = int(round(np.sin(radians) * center))
+    cv2.line(kernel, (center - dx, center - dy), (center + dx, center + dy), 1, 1)
+    return kernel
+
+
+def detect_red_fiber_background(red_image: np.ndarray, line_length: int) -> np.ndarray:
+    """
+    Detect long red nanofiber-like structures using multi-angle openings.
+
+    Line openings respond to elongated structures and suppress compact dots.
+    """
+
+    length = ensure_odd_kernel_size(line_length)
+    responses = np.zeros_like(red_image)
+    for angle in [0, 30, 60, 90, 120, 150]:
+        line_kernel = create_line_kernel(length, angle)
+        opened = cv2.morphologyEx(red_image, cv2.MORPH_OPEN, line_kernel)
+        responses = np.maximum(responses, opened)
+
+    if int(responses.max()) == 0:
+        return np.zeros_like(red_image)
+
+    _, fiber_mask = cv2.threshold(
+        responses,
+        0,
+        255,
+        cv2.THRESH_BINARY + cv2.THRESH_OTSU,
+    )
+    return fiber_mask
+
+
+def enhance_red_puncta(
+    red_preprocessed: np.ndarray,
+    enhancement_method: str,
+    top_hat_kernel: int,
+) -> np.ndarray:
+    """Enhance compact red puncta before thresholding."""
+
+    method = normalize_mode_name(enhancement_method)
+    if method in {"white_tophat", "white_top_hat"}:
+        kernel_size = ensure_odd_kernel_size(top_hat_kernel)
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+        enhanced = cv2.morphologyEx(red_preprocessed, cv2.MORPH_TOPHAT, kernel)
+        return normalize_to_uint8(enhanced)
+
+    if method in {"log_like_blob_enhancement", "log_like", "log"}:
+        blur_small = cv2.GaussianBlur(red_preprocessed, (3, 3), 0)
+        blur_large = cv2.GaussianBlur(red_preprocessed, (9, 9), 0)
+        enhanced = cv2.subtract(blur_small, blur_large)
+        return normalize_to_uint8(enhanced)
+
+    return red_preprocessed.copy()
+
+
+def draw_puncta_annotation(
+    overlay_rgb: np.ndarray,
+    centroid_x: float,
+    centroid_y: float,
+    radius: int,
+    puncta_id: int,
+) -> None:
+    """Draw a compact circle and ID for a detected red punctum."""
+
+    center = (int(round(centroid_x)), int(round(centroid_y)))
+    cv2.circle(overlay_rgb, center, max(3, radius), color=(0, 255, 255), thickness=1)
+    cv2.putText(
+        overlay_rgb,
+        str(puncta_id),
+        (center[0] + 3, center[1] - 3),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        fontScale=0.4,
+        color=(255, 255, 0),
+        thickness=1,
+        lineType=cv2.LINE_AA,
+    )
+
+
 def draw_area_annotation(
     overlay_rgb: np.ndarray,
     region_mask: np.ndarray,
@@ -873,6 +1140,28 @@ def green_statistics_columns() -> list[str]:
     ]
 
 
+def red_statistics_columns() -> list[str]:
+    """Central definition of the red protein puncta statistics table schema."""
+
+    return [
+        "Puncta_ID",
+        "Area_px",
+        "Centroid_X",
+        "Centroid_Y",
+        "Bounding_Box_X",
+        "Bounding_Box_Y",
+        "Bounding_Box_W",
+        "Bounding_Box_H",
+        "Mean_Red_Intensity",
+        "Max_Red_Intensity",
+        "Integrated_Red_Intensity",
+        "Circularity",
+        "Aspect_Ratio",
+        "Overlaps_Fiber_Background",
+        "Is_Edge_Puncta",
+    ]
+
+
 def summarize_green_results(dataframe: pd.DataFrame) -> dict[str, float | int]:
     """Compute display-ready summary metrics for green area analysis."""
 
@@ -916,6 +1205,38 @@ def summarize_green_results(dataframe: pd.DataFrame) -> dict[str, float | int]:
             )
             if rescued_hole_count
             else 0.0
+        ),
+    }
+
+
+def summarize_red_results(
+    dataframe: pd.DataFrame,
+    fiber_background_mask: np.ndarray,
+) -> dict[str, float | int]:
+    """Compute display-ready summary metrics for red puncta analysis."""
+
+    fiber_area = int((fiber_background_mask > 0).sum())
+    if dataframe.empty:
+        return {
+            "puncta_count": 0,
+            "total_puncta_area_px": 0,
+            "mean_puncta_area_px": 0.0,
+            "mean_red_intensity_in_puncta": 0.0,
+            "total_integrated_red_intensity": 0.0,
+            "fiber_background_pixel_area_px": fiber_area,
+            "puncta_to_fiber_area_ratio": 0.0,
+        }
+
+    total_puncta_area = int(dataframe["Area_px"].sum())
+    return {
+        "puncta_count": int(len(dataframe)),
+        "total_puncta_area_px": total_puncta_area,
+        "mean_puncta_area_px": float(dataframe["Area_px"].mean()),
+        "mean_red_intensity_in_puncta": float(dataframe["Mean_Red_Intensity"].mean()),
+        "total_integrated_red_intensity": float(dataframe["Integrated_Red_Intensity"].sum()),
+        "fiber_background_pixel_area_px": fiber_area,
+        "puncta_to_fiber_area_ratio": (
+            float(total_puncta_area / fiber_area) if fiber_area else 0.0
         ),
     }
 

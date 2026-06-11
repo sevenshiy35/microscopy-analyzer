@@ -49,6 +49,29 @@ GREEN_DEFAULTS = {
 }
 
 
+RED_DEFAULTS = {
+    "red_preset": "Balanced",
+    "red_threshold_mode": "Manual",
+    "red_manual_threshold": 40,
+    "red_background_subtraction": True,
+    "red_background_blur_kernel": 51,
+    "red_enhancement_method": "White top-hat",
+    "red_top_hat_kernel": 7,
+    "red_remove_fibers": True,
+    "red_fiber_removal_method": "Both",
+    "red_line_suppression_length": 31,
+    "red_min_area": 3,
+    "red_max_area": 300,
+    "red_min_circularity": 0.35,
+    "red_max_aspect_ratio": 3.0,
+    "red_min_mean_intensity": 20,
+    "red_exclude_edge_puncta": False,
+    "red_edge_margin": 3,
+    "red_merge_nearby_puncta": False,
+    "red_merge_distance": 2,
+}
+
+
 CYTOSKELETON_AREA_PRESETS = {
     "Conservative": {
         "green_threshold_mode": "Manual",
@@ -98,6 +121,58 @@ CYTOSKELETON_AREA_PRESETS = {
 }
 
 
+RED_PUNCTA_PRESETS = {
+    "Conservative": {
+        "red_threshold_mode": "Manual",
+        "red_manual_threshold": 55,
+        "red_background_subtraction": True,
+        "red_background_blur_kernel": 51,
+        "red_enhancement_method": "White top-hat",
+        "red_top_hat_kernel": 7,
+        "red_remove_fibers": True,
+        "red_fiber_removal_method": "Both",
+        "red_line_suppression_length": 31,
+        "red_min_area": 3,
+        "red_max_area": 150,
+        "red_min_circularity": 0.45,
+        "red_max_aspect_ratio": 2.5,
+        "red_min_mean_intensity": 30,
+    },
+    "Balanced": {
+        "red_threshold_mode": "Manual",
+        "red_manual_threshold": 40,
+        "red_background_subtraction": True,
+        "red_background_blur_kernel": 51,
+        "red_enhancement_method": "White top-hat",
+        "red_top_hat_kernel": 7,
+        "red_remove_fibers": True,
+        "red_fiber_removal_method": "Both",
+        "red_line_suppression_length": 31,
+        "red_min_area": 3,
+        "red_max_area": 300,
+        "red_min_circularity": 0.35,
+        "red_max_aspect_ratio": 3.0,
+        "red_min_mean_intensity": 20,
+    },
+    "Sensitive": {
+        "red_threshold_mode": "Manual",
+        "red_manual_threshold": 25,
+        "red_background_subtraction": True,
+        "red_background_blur_kernel": 51,
+        "red_enhancement_method": "White top-hat",
+        "red_top_hat_kernel": 9,
+        "red_remove_fibers": True,
+        "red_fiber_removal_method": "Shape filtering only",
+        "red_line_suppression_length": 31,
+        "red_min_area": 2,
+        "red_max_area": 500,
+        "red_min_circularity": 0.25,
+        "red_max_aspect_ratio": 4.0,
+        "red_min_mean_intensity": 10,
+    },
+}
+
+
 LABELS = {
     "language": ("Language", "语言"),
     "analysis_parameters": ("Analysis Parameters", "分析参数"),
@@ -143,6 +218,26 @@ LABELS = {
         "Fill only holes with green evidence",
         "仅填充有绿色证据的空洞",
     ),
+    "red_preset": ("Red puncta preset", "红色蛋白点预设"),
+    "red_threshold_mode": ("Red threshold mode", "红色阈值模式"),
+    "red_manual_threshold": ("Manual red threshold", "手动红色阈值"),
+    "red_background_subtraction": ("Background subtraction", "背景扣除"),
+    "red_background_blur_kernel": ("Background blur kernel", "背景模糊核"),
+    "red_enhancement_method": ("Puncta enhancement method", "蛋白点增强方法"),
+    "red_top_hat_kernel": ("Top-hat kernel size", "顶帽核大小"),
+    "red_remove_fibers": ("Remove fiber-like structures", "移除纤维状结构"),
+    "red_fiber_removal_method": ("Fiber removal method", "纤维移除方法"),
+    "red_line_suppression_length": ("Line suppression length", "线状抑制长度"),
+    "red_min_area": ("Minimum puncta area", "最小蛋白点面积"),
+    "red_max_area": ("Maximum puncta area", "最大蛋白点面积"),
+    "red_min_circularity": ("Minimum circularity", "最小圆度"),
+    "red_max_aspect_ratio": ("Maximum aspect ratio", "最大长宽比"),
+    "red_min_mean_intensity": ("Minimum mean red intensity", "最小平均红色强度"),
+    "red_exclude_edge_puncta": ("Exclude edge puncta", "排除边缘蛋白点"),
+    "red_edge_margin": ("Red edge margin", "红色边缘距离"),
+    "red_merge_nearby_puncta": ("Merge nearby puncta", "合并邻近蛋白点"),
+    "red_merge_distance": ("Merge distance", "合并距离"),
+    "red_guide": ("Red Protein Puncta Guide", "红色蛋白点检测参数说明"),
 }
 
 
@@ -259,6 +354,82 @@ HELP = {
         "If enabled, holes are filled only when weak green evidence is present. Disable only when using global Fill holes intentionally.",
         "开启后只填充有弱绿色证据的空洞。只有明确需要全局填洞时才关闭。",
     ),
+    "red_preset": (
+        "Chooses a starting parameter set for red puncta detection. Conservative reduces false positives; Sensitive keeps weaker dots.",
+        "选择红色蛋白点检测的起始参数。Conservative 减少误检；Sensitive 保留更弱的小点。",
+    ),
+    "red_threshold_mode": (
+        "Controls thresholding of enhanced red puncta. Manual is predictable; Otsu adapts automatically but can be affected by fibers.",
+        "控制增强后红色点的阈值。Manual 更可控；Otsu 自动适应但可能受纤维影响。",
+    ),
+    "red_manual_threshold": (
+        "Higher values keep brighter puncta only; lower values detect weaker puncta but may add background or fibers.",
+        "数值越高只保留更亮蛋白点；数值越低可检测弱点，但可能带入背景或纤维。",
+    ),
+    "red_background_subtraction": (
+        "Reduces broad red background before puncta enhancement. Disable if it removes real dim puncta.",
+        "在蛋白点增强前减少大范围红色背景。如果削弱真实弱点可关闭。",
+    ),
+    "red_background_blur_kernel": (
+        "Controls the scale of red background subtraction. Larger values model broader haze; smaller values remove more local signal.",
+        "控制红色背景扣除尺度。数值越大处理更宽范围光晕；数值越小可能扣掉局部信号。",
+    ),
+    "red_enhancement_method": (
+        "Enhances small bright dots. White top-hat is best for puncta; LoG-like emphasizes blobs; None uses the preprocessed red channel.",
+        "增强小亮点。White top-hat 适合蛋白点；LoG-like 强调斑点；None 直接使用预处理红色通道。",
+    ),
+    "red_top_hat_kernel": (
+        "Size of the top-hat structure. Larger kernels enhance larger dots and suppress broad background; smaller kernels target tiny puncta.",
+        "顶帽结构大小。大核增强较大点并抑制宽背景；小核更针对微小点。",
+    ),
+    "red_remove_fibers": (
+        "Suppresses long red nanofiber-like structures so they are not counted as protein puncta.",
+        "抑制长条红色纳米纤维结构，避免被统计为蛋白点。",
+    ),
+    "red_fiber_removal_method": (
+        "Shape filtering removes elongated components; line suppression detects long lines; Both applies both filters.",
+        "形状过滤去除细长连通域；线状抑制检测长线；Both 同时使用二者。",
+    ),
+    "red_line_suppression_length": (
+        "Length of line kernels used to find fibers. Larger values target longer fibers; smaller values may also suppress short streaks.",
+        "用于检测纤维的线核长度。数值越大针对更长纤维；数值越小也可能抑制短条纹。",
+    ),
+    "red_min_area": (
+        "Smallest puncta area to keep. Increase to remove tiny noise; decrease for very small real dots.",
+        "保留蛋白点的最小面积。调大去除微小噪声；真实点很小时调小。",
+    ),
+    "red_max_area": (
+        "Largest puncta area to keep. Decrease to reject blobs/fibers; increase if real puncta are larger.",
+        "保留蛋白点的最大面积。调小可排除大斑块/纤维；真实点较大时调大。",
+    ),
+    "red_min_circularity": (
+        "Filters elongated objects. Higher values require rounder dots; lower values allow irregular puncta.",
+        "过滤细长对象。数值越高要求越圆；数值越低允许不规则点。",
+    ),
+    "red_max_aspect_ratio": (
+        "Rejects long objects by bounding-box shape. Lower values remove more fibers; higher values keep elongated puncta.",
+        "按外接框形状排除长条对象。数值越低去除更多纤维；数值越高保留较长点。",
+    ),
+    "red_min_mean_intensity": (
+        "Minimum average original red intensity inside puncta. Increase to keep stronger protein signal; decrease for dim puncta.",
+        "蛋白点内原始红色平均强度下限。调高保留更强信号；调低检测较暗点。",
+    ),
+    "red_exclude_edge_puncta": (
+        "Removes puncta near image borders. Enable when edge detections are incomplete or unreliable.",
+        "排除靠近图像边缘的蛋白点。边缘检测不完整或不可靠时开启。",
+    ),
+    "red_edge_margin": (
+        "Distance from the image border used for red puncta exclusion. Larger margins exclude more edge dots.",
+        "红色蛋白点边缘排除距离。数值越大排除更多边缘点。",
+    ),
+    "red_merge_nearby_puncta": (
+        "Merges very close puncta before component analysis. Enable when one punctum is fragmented; disable to separate nearby dots.",
+        "连通域分析前合并非常接近的点。当单个点被切碎时开启；需要分离邻近点时关闭。",
+    ),
+    "red_merge_distance": (
+        "Merge radius for nearby puncta. Larger values merge more dots; smaller values preserve separation.",
+        "邻近蛋白点合并半径。数值越大合并越多；数值越小更保留分离。",
+    ),
 }
 
 
@@ -299,6 +470,28 @@ GUIDES = {
         (
             "Weak green rescue can recover dim green regions supported by nearby stronger cytoskeleton.",
             "弱绿色救回可以恢复由邻近强骨架支持的淡绿色区域。",
+        ),
+    ],
+    "red": [
+        (
+            "Red puncta represent target protein signal; long red fibers represent nanofiber background.",
+            "红色小点代表目标蛋白信号；长红色纤维代表纳米纤维背景。",
+        ),
+        (
+            "This module uses puncta enhancement, fiber suppression, and shape filtering to separate dots from fibers.",
+            "本模块通过蛋白点增强、纤维抑制和形状过滤来区分小点与纤维。",
+        ),
+        (
+            "Do not treat all red signal as protein puncta.",
+            "不要把所有红色信号都当作蛋白点。",
+        ),
+        (
+            "Circularity and aspect ratio are important for rejecting elongated nanofiber structures.",
+            "圆度和长宽比是排除细长纳米纤维结构的重要参数。",
+        ),
+        (
+            "Top-hat enhancement highlights small bright dots while reducing broad red background.",
+            "顶帽增强突出小亮点，同时降低大范围红色背景。",
         ),
     ],
 }
@@ -350,6 +543,7 @@ def all_defaults() -> dict[str, Any]:
     }
     defaults.update(BLUE_DEFAULTS)
     defaults.update(GREEN_DEFAULTS)
+    defaults.update(RED_DEFAULTS)
     return deepcopy(defaults)
 
 
@@ -369,6 +563,17 @@ def apply_green_preset(session_state: Any, preset_name: str) -> None:
     for key, value in preset.items():
         session_state[key] = value
     session_state["green_preset"] = preset_name
+
+
+def apply_red_preset(session_state: Any, preset_name: str) -> None:
+    """Apply a red puncta preset to session state."""
+
+    preset = RED_PUNCTA_PRESETS.get(preset_name)
+    if not preset:
+        return
+    for key, value in preset.items():
+        session_state[key] = value
+    session_state["red_preset"] = preset_name
 
 
 def sanitize_profile_name(profile_name: str) -> str:
@@ -423,6 +628,27 @@ def build_profile(session_state: Any) -> dict[str, Any]:
             "fill_only_holes_with_green_evidence": session_state.get(
                 "green_fill_only_holes_with_green_evidence"
             ),
+        },
+        "red_protein_puncta": {
+            "preset": session_state.get("red_preset"),
+            "threshold_mode": session_state.get("red_threshold_mode"),
+            "manual_threshold": session_state.get("red_manual_threshold"),
+            "background_subtraction": session_state.get("red_background_subtraction"),
+            "background_blur_kernel": session_state.get("red_background_blur_kernel"),
+            "enhancement_method": session_state.get("red_enhancement_method"),
+            "top_hat_kernel": session_state.get("red_top_hat_kernel"),
+            "remove_fibers": session_state.get("red_remove_fibers"),
+            "fiber_removal_method": session_state.get("red_fiber_removal_method"),
+            "line_suppression_length": session_state.get("red_line_suppression_length"),
+            "min_area": session_state.get("red_min_area"),
+            "max_area": session_state.get("red_max_area"),
+            "min_circularity": session_state.get("red_min_circularity"),
+            "max_aspect_ratio": session_state.get("red_max_aspect_ratio"),
+            "min_mean_intensity": session_state.get("red_min_mean_intensity"),
+            "exclude_edge_puncta": session_state.get("red_exclude_edge_puncta"),
+            "edge_margin": session_state.get("red_edge_margin"),
+            "merge_nearby_puncta": session_state.get("red_merge_nearby_puncta"),
+            "merge_distance": session_state.get("red_merge_distance"),
         },
     }
 
@@ -500,3 +726,29 @@ def apply_profile(session_state: Any, profile: dict[str, Any]) -> None:
             if source_key in green:
                 session_state[state_key] = green[source_key]
 
+    red = profile.get("red_protein_puncta", {})
+    if isinstance(red, dict):
+        mapping = {
+            "preset": "red_preset",
+            "threshold_mode": "red_threshold_mode",
+            "manual_threshold": "red_manual_threshold",
+            "background_subtraction": "red_background_subtraction",
+            "background_blur_kernel": "red_background_blur_kernel",
+            "enhancement_method": "red_enhancement_method",
+            "top_hat_kernel": "red_top_hat_kernel",
+            "remove_fibers": "red_remove_fibers",
+            "fiber_removal_method": "red_fiber_removal_method",
+            "line_suppression_length": "red_line_suppression_length",
+            "min_area": "red_min_area",
+            "max_area": "red_max_area",
+            "min_circularity": "red_min_circularity",
+            "max_aspect_ratio": "red_max_aspect_ratio",
+            "min_mean_intensity": "red_min_mean_intensity",
+            "exclude_edge_puncta": "red_exclude_edge_puncta",
+            "edge_margin": "red_edge_margin",
+            "merge_nearby_puncta": "red_merge_nearby_puncta",
+            "merge_distance": "red_merge_distance",
+        }
+        for source_key, state_key in mapping.items():
+            if source_key in red:
+                session_state[state_key] = red[source_key]
