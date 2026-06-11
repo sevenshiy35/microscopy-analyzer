@@ -150,6 +150,54 @@ def clean_binary_mask(binary_mask: np.ndarray, close_kernel_size: int) -> np.nda
     return cleaned
 
 
+def clean_cytoskeleton_mask(binary_mask: np.ndarray, close_kernel_size: int) -> np.ndarray:
+    """
+    Remove tiny green speckles and connect broken cytoskeleton fibers.
+
+    For cytoskeleton-like structures we open first to suppress isolated noise,
+    then close with a larger kernel to bridge gaps in fibers and cell edges.
+    """
+
+    close_size = ensure_odd_kernel_size(close_kernel_size)
+    open_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    close_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (close_size, close_size))
+
+    opened = cv2.morphologyEx(binary_mask, cv2.MORPH_OPEN, open_kernel)
+    cleaned = cv2.morphologyEx(opened, cv2.MORPH_CLOSE, close_kernel)
+    return cleaned
+
+
+def fill_binary_holes(binary_mask: np.ndarray) -> np.ndarray:
+    """
+    Fill enclosed holes in a binary mask using OpenCV flood fill.
+
+    The method marks background connected to image borders, then treats the
+    remaining background pixels as enclosed holes. This avoids adding SciPy.
+    """
+
+    mask = (binary_mask > 0).astype(np.uint8) * 255
+    flood = mask.copy()
+    height, width = flood.shape
+    flood_fill_mask = np.zeros((height + 2, width + 2), dtype=np.uint8)
+
+    border_points: list[tuple[int, int]] = []
+    for x_coord in range(width):
+        border_points.append((x_coord, 0))
+        border_points.append((x_coord, height - 1))
+    for y_coord in range(height):
+        border_points.append((0, y_coord))
+        border_points.append((width - 1, y_coord))
+
+    for seed_x, seed_y in border_points:
+        if flood[seed_y, seed_x] == 0:
+            cv2.floodFill(flood, flood_fill_mask, (seed_x, seed_y), 255)
+
+    holes = flood == 0
+    filled = mask.copy()
+    filled[holes] = 255
+    return filled
+
+
 def touches_or_near_edge(
     x: int,
     y: int,
@@ -276,6 +324,177 @@ def analyze_blue_nuclei(
     }
 
 
+def analyze_green_cytoskeleton_area(
+    image_rgb: np.ndarray,
+    threshold_mode: str = "manual",
+    manual_threshold: int = 35,
+    gaussian_kernel: int = 5,
+    use_background_subtraction: bool = True,
+    background_kernel: int = 51,
+    morph_close_kernel: int = 15,
+    dilate_before_fill: bool = True,
+    dilation_kernel: int = 7,
+    fill_enclosed_regions: bool = True,
+    min_area: int = 3000,
+    exclude_edge_regions: bool = False,
+    edge_margin: int = 5,
+) -> dict[str, np.ndarray | pd.DataFrame | dict[str, float | int]]:
+    """
+    Estimate green cytoskeleton-covered cell regions with traditional CV.
+
+    The function detects green fibers first, then optionally dilates and fills
+    enclosed areas to estimate the broader cell-covered region.
+    """
+
+    rgb_uint8 = normalize_to_uint8(image_rgb)
+    green_channel = extract_channel(rgb_uint8, "green")
+
+    if use_background_subtraction:
+        background_size = ensure_odd_kernel_size(background_kernel)
+        background = cv2.GaussianBlur(green_channel, (background_size, background_size), 0)
+        green_enhanced_raw = cv2.subtract(green_channel, background)
+        green_enhanced = normalize_to_uint8(green_enhanced_raw)
+    else:
+        green_enhanced = green_channel.copy()
+
+    blur_size = ensure_odd_kernel_size(gaussian_kernel)
+    blurred_green = cv2.GaussianBlur(green_enhanced, (blur_size, blur_size), 0)
+
+    normalized_threshold_mode = threshold_mode.strip().lower()
+    cv_threshold_mode: ThresholdMode = "Otsu" if normalized_threshold_mode == "otsu" else "Manual"
+    cytoskeleton_binary_mask, threshold_value = threshold_channel(
+        blurred_green,
+        cv_threshold_mode,
+        manual_threshold,
+    )
+
+    cytoskeleton_cleaned_mask = clean_cytoskeleton_mask(
+        cytoskeleton_binary_mask,
+        morph_close_kernel,
+    )
+
+    area_seed_mask = cytoskeleton_cleaned_mask.copy()
+    if dilate_before_fill:
+        dilate_size = ensure_odd_kernel_size(dilation_kernel)
+        dilate_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (dilate_size, dilate_size))
+        area_seed_mask = cv2.dilate(area_seed_mask, dilate_kernel, iterations=1)
+
+    if fill_enclosed_regions:
+        estimated_area_mask = fill_binary_holes(area_seed_mask)
+    else:
+        estimated_area_mask = area_seed_mask.copy()
+
+    component_count, labels, stats, centroids = cv2.connectedComponentsWithStats(
+        estimated_area_mask,
+        connectivity=8,
+    )
+
+    filtered_area_mask = np.zeros_like(estimated_area_mask)
+    overlay_cytoskeleton = make_cytoskeleton_overlay(rgb_uint8, cytoskeleton_cleaned_mask)
+    overlay_estimated_area = rgb_uint8.copy()
+    image_height, image_width = estimated_area_mask.shape
+    records: list[dict[str, float | int | bool]] = []
+    accepted_annotations: list[tuple[np.ndarray, int, float, float]] = []
+    region_id = 1
+
+    for component_label in range(1, component_count):
+        x = int(stats[component_label, cv2.CC_STAT_LEFT])
+        y = int(stats[component_label, cv2.CC_STAT_TOP])
+        width = int(stats[component_label, cv2.CC_STAT_WIDTH])
+        height = int(stats[component_label, cv2.CC_STAT_HEIGHT])
+        area = int(stats[component_label, cv2.CC_STAT_AREA])
+        centroid_x, centroid_y = centroids[component_label]
+
+        if area < int(min_area):
+            continue
+
+        is_edge_region = touches_or_near_edge(
+            x=x,
+            y=y,
+            width=width,
+            height=height,
+            image_width=image_width,
+            image_height=image_height,
+            edge_margin=edge_margin,
+        )
+
+        if exclude_edge_regions and is_edge_region:
+            continue
+
+        region_pixels = labels == component_label
+        region_mask = region_pixels.astype(np.uint8) * 255
+        cytoskeleton_pixels = (cytoskeleton_cleaned_mask > 0) & region_pixels
+        cytoskeleton_pixel_area = int(cytoskeleton_pixels.sum())
+        coverage_ratio = float(cytoskeleton_pixel_area / area) if area else 0.0
+
+        filtered_area_mask[region_pixels] = 255
+
+        mean_green = float(cv2.mean(green_channel, mask=region_mask)[0])
+        max_green = int(green_channel[region_pixels].max())
+        integrated_green = float(green_channel[region_pixels].sum())
+
+        records.append(
+            {
+                "Region_ID": region_id,
+                "Area_px": area,
+                "Bounding_Box_X": x,
+                "Bounding_Box_Y": y,
+                "Bounding_Box_W": width,
+                "Bounding_Box_H": height,
+                "Centroid_X": round(float(centroid_x), 2),
+                "Centroid_Y": round(float(centroid_y), 2),
+                "Mean_Green_Intensity": round(mean_green, 2),
+                "Max_Green_Intensity": max_green,
+                "Integrated_Green_Intensity": round(integrated_green, 2),
+                "Cytoskeleton_Pixel_Area_px": cytoskeleton_pixel_area,
+                "Cytoskeleton_Coverage_Ratio": round(coverage_ratio, 4),
+                "Is_Edge_Region": bool(is_edge_region),
+            }
+        )
+
+        draw_area_annotation(
+            overlay_rgb=overlay_estimated_area,
+            region_mask=region_mask,
+            region_id=region_id,
+            centroid_x=centroid_x,
+            centroid_y=centroid_y,
+        )
+        accepted_annotations.append((region_mask, region_id, float(centroid_x), float(centroid_y)))
+        region_id += 1
+
+    overlay_estimated_area = blend_mask_color(
+        overlay_estimated_area,
+        filtered_area_mask,
+        color_rgb=(255, 220, 0),
+        alpha=0.35,
+    )
+    # Redraw annotations after blending so contours and IDs stay crisp.
+    for region_mask, annotation_id, centroid_x, centroid_y in accepted_annotations:
+        draw_area_annotation(
+            overlay_rgb=overlay_estimated_area,
+            region_mask=region_mask,
+            region_id=annotation_id,
+            centroid_x=centroid_x,
+            centroid_y=centroid_y,
+        )
+
+    results_dataframe = pd.DataFrame.from_records(records, columns=green_statistics_columns())
+    summary_metrics = summarize_green_results(results_dataframe)
+    summary_metrics["threshold_value"] = float(threshold_value)
+
+    return {
+        "green_channel_display": green_channel,
+        "green_enhanced": green_enhanced,
+        "cytoskeleton_binary_mask": cytoskeleton_binary_mask,
+        "cytoskeleton_cleaned_mask": cytoskeleton_cleaned_mask,
+        "estimated_cell_area_mask": filtered_area_mask,
+        "overlay_cytoskeleton": overlay_cytoskeleton,
+        "overlay_estimated_area": overlay_estimated_area,
+        "results_dataframe": results_dataframe,
+        "summary_metrics": summary_metrics,
+    }
+
+
 def draw_component_annotation(
     overlay_rgb: np.ndarray,
     component_mask: np.ndarray,
@@ -306,6 +525,69 @@ def draw_component_annotation(
     )
 
 
+def blend_mask_color(
+    image_rgb: np.ndarray,
+    mask: np.ndarray,
+    color_rgb: tuple[int, int, int],
+    alpha: float,
+) -> np.ndarray:
+    """Blend a solid RGB color into pixels selected by a binary mask."""
+
+    output = image_rgb.copy()
+    selected_pixels = mask > 0
+    if not selected_pixels.any():
+        return output
+
+    color_array = np.array(color_rgb, dtype=np.float32)
+    output_float = output.astype(np.float32)
+    output_float[selected_pixels] = (
+        (1.0 - alpha) * output_float[selected_pixels] + alpha * color_array
+    )
+    return np.clip(output_float, 0, 255).astype(np.uint8)
+
+
+def make_cytoskeleton_overlay(rgb_image: np.ndarray, cytoskeleton_mask: np.ndarray) -> np.ndarray:
+    """Create an RGB overlay where detected green fibers are highlighted."""
+
+    overlay = blend_mask_color(
+        rgb_image,
+        cytoskeleton_mask,
+        color_rgb=(0, 255, 80),
+        alpha=0.65,
+    )
+    contours, _ = cv2.findContours(
+        (cytoskeleton_mask > 0).astype(np.uint8) * 255,
+        cv2.RETR_EXTERNAL,
+        cv2.CHAIN_APPROX_SIMPLE,
+    )
+    cv2.drawContours(overlay, contours, contourIdx=-1, color=(0, 255, 0), thickness=1)
+    return overlay
+
+
+def draw_area_annotation(
+    overlay_rgb: np.ndarray,
+    region_mask: np.ndarray,
+    region_id: int,
+    centroid_x: float,
+    centroid_y: float,
+) -> None:
+    """Draw an estimated cell-covered region outline and ID label."""
+
+    contours, _ = cv2.findContours(region_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    cv2.drawContours(overlay_rgb, contours, contourIdx=-1, color=(255, 255, 0), thickness=2)
+
+    cv2.putText(
+        overlay_rgb,
+        str(region_id),
+        (int(round(centroid_x)), int(round(centroid_y))),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        fontScale=0.7,
+        color=(255, 255, 0),
+        thickness=2,
+        lineType=cv2.LINE_AA,
+    )
+
+
 def statistics_columns() -> list[str]:
     """Central definition of the statistics table schema."""
 
@@ -323,6 +605,57 @@ def statistics_columns() -> list[str]:
         "Integrated_Blue_Intensity",
         "Is_Edge_Nucleus",
     ]
+
+
+def green_statistics_columns() -> list[str]:
+    """Central definition of the green cytoskeleton statistics table schema."""
+
+    return [
+        "Region_ID",
+        "Area_px",
+        "Bounding_Box_X",
+        "Bounding_Box_Y",
+        "Bounding_Box_W",
+        "Bounding_Box_H",
+        "Centroid_X",
+        "Centroid_Y",
+        "Mean_Green_Intensity",
+        "Max_Green_Intensity",
+        "Integrated_Green_Intensity",
+        "Cytoskeleton_Pixel_Area_px",
+        "Cytoskeleton_Coverage_Ratio",
+        "Is_Edge_Region",
+    ]
+
+
+def summarize_green_results(dataframe: pd.DataFrame) -> dict[str, float | int]:
+    """Compute display-ready summary metrics for green area analysis."""
+
+    if dataframe.empty:
+        return {
+            "regions_count": 0,
+            "total_estimated_cell_area_px": 0,
+            "mean_estimated_region_area_px": 0.0,
+            "total_cytoskeleton_pixel_area_px": 0,
+            "mean_green_intensity_inside_estimated_areas": 0.0,
+            "cytoskeleton_coverage_ratio": 0.0,
+        }
+
+    total_area = int(dataframe["Area_px"].sum())
+    total_cytoskeleton_area = int(dataframe["Cytoskeleton_Pixel_Area_px"].sum())
+
+    return {
+        "regions_count": int(len(dataframe)),
+        "total_estimated_cell_area_px": total_area,
+        "mean_estimated_region_area_px": float(dataframe["Area_px"].mean()),
+        "total_cytoskeleton_pixel_area_px": total_cytoskeleton_area,
+        "mean_green_intensity_inside_estimated_areas": float(
+            dataframe["Mean_Green_Intensity"].mean()
+        ),
+        "cytoskeleton_coverage_ratio": (
+            float(total_cytoskeleton_area / total_area) if total_area else 0.0
+        ),
+    }
 
 
 def dataframe_to_csv_bytes(dataframe: pd.DataFrame) -> bytes:

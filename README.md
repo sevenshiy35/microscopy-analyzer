@@ -1,6 +1,6 @@
 # Microscopy Fluorescence Image Analyzer
 
-展示型 Python/Streamlit 软件原型，用于分析生物显微镜拍摄的荧光细胞图像。当前第一阶段实现蓝色荧光细胞核区域的自动识别、标注和定量统计，不使用深度学习。
+展示型 Python/Streamlit 软件原型，用于分析生物显微镜拍摄的荧光细胞图像。当前实现蓝色荧光细胞核区域的自动识别、标注和定量统计，并新增绿色荧光 cytoskeleton / actin-like fibers 区域分析。不使用深度学习。
 
 ## Features
 
@@ -25,10 +25,30 @@
   - Centroid
   - Mean, max, and integrated blue intensity
   - Edge nucleus flag
+- Estimate green cytoskeleton-covered cell area with traditional image processing:
+  - Green channel extraction
+  - Optional large Gaussian background subtraction
+  - Gaussian blur denoising
+  - Otsu or manual thresholding
+  - Morphological open and close
+  - Optional dilation before cell area filling
+  - OpenCV flood-fill based enclosed-region filling
+  - Connected component filtering and optional edge exclusion
+- Quantify each estimated green cell-covered region:
+  - Area
+  - Bounding box
+  - Centroid
+  - Mean, max, and integrated green intensity
+  - Cytoskeleton pixel area
+  - Cytoskeleton coverage ratio
+  - Edge region flag
 - Download:
   - CSV statistics
-  - Overlay PNG
-  - Binary mask PNG
+  - Blue nuclei overlay and mask PNG
+  - Green cytoskeleton mask PNG
+  - Estimated cell area mask PNG
+  - Green cytoskeleton overlay PNG
+  - Estimated area overlay PNG
 
 ## Project Structure
 
@@ -51,7 +71,7 @@ pip install -r requirements.txt
 
 ## Run
 
-From the `microscopy_analyzer` directory:
+From the project directory:
 
 ```bash
 streamlit run app.py
@@ -65,7 +85,6 @@ The UI is kept in `app.py`, while the image-processing logic is isolated in `ima
 
 The current channel utilities are designed so future modules can add:
 
-- Green channel cytoskeleton analysis
 - Red channel protein fluorescence intensity analysis
 - Multi-channel colocalization statistics
 - Batch image processing
