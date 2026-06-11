@@ -210,6 +210,126 @@ def estimate_cell_area_from_fibers(
     return (area_mask > 0).astype(np.uint8) * 255
 
 
+def create_weak_green_mask(green_channel: np.ndarray, weak_green_threshold: int) -> np.ndarray:
+    """
+    Detect dim green evidence using CLAHE on the original green channel.
+
+    CLAHE improves faint local texture without pulling in all weak background;
+    the resulting mask is still gated later by strong-fiber support or holes.
+    """
+
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    enhanced_green = clahe.apply(green_channel)
+    threshold_value = int(np.clip(weak_green_threshold, 0, 255))
+    _, clahe_mask = cv2.threshold(enhanced_green, threshold_value, 255, cv2.THRESH_BINARY)
+    original_floor = max(3, threshold_value // 2)
+    _, original_mask = cv2.threshold(green_channel, original_floor, 255, cv2.THRESH_BINARY)
+    weak_mask = cv2.bitwise_and(clahe_mask, original_mask)
+    return weak_mask
+
+
+def rescue_weak_signal_near_fibers(
+    weak_green_mask: np.ndarray,
+    strong_fiber_mask: np.ndarray,
+    connection_radius: int,
+) -> np.ndarray:
+    """
+    Keep weak green pixels only when they are near clear cytoskeleton fibers.
+
+    This prevents low-threshold background pixels far from real structures from
+    being added to the area-estimation seed.
+    """
+
+    radius = ensure_odd_kernel_size(connection_radius)
+    support_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (radius, radius))
+    strong_support_zone = cv2.dilate(strong_fiber_mask, support_kernel, iterations=1)
+    rescued = ((weak_green_mask > 0) & (strong_support_zone > 0)).astype(np.uint8) * 255
+    return rescued
+
+
+def identify_binary_holes(binary_mask: np.ndarray) -> np.ndarray:
+    """Return enclosed holes in a binary mask without filling edge background."""
+
+    mask = (binary_mask > 0).astype(np.uint8) * 255
+    flood = mask.copy()
+    height, width = flood.shape
+    flood_fill_mask = np.zeros((height + 2, width + 2), dtype=np.uint8)
+
+    border_points: list[tuple[int, int]] = []
+    for x_coord in range(width):
+        border_points.append((x_coord, 0))
+        border_points.append((x_coord, height - 1))
+    for y_coord in range(height):
+        border_points.append((0, y_coord))
+        border_points.append((width - 1, y_coord))
+
+    for seed_x, seed_y in border_points:
+        if flood[seed_y, seed_x] == 0:
+            cv2.floodFill(flood, flood_fill_mask, (seed_x, seed_y), 255)
+
+    return (flood == 0).astype(np.uint8) * 255
+
+
+def selectively_fill_weak_green_holes(
+    area_mask: np.ndarray,
+    green_channel: np.ndarray,
+    weak_green_mask: np.ndarray,
+    min_weak_coverage: float,
+    max_hole_area: int,
+) -> tuple[np.ndarray, np.ndarray, list[float]]:
+    """
+    Fill only enclosed holes that contain measurable weak green evidence.
+
+    Large holes, edge-connected background, and low-coverage dark holes are kept
+    as holes. Returns the updated area mask, rescued-hole mask, and coverage
+    ratios for rescued holes.
+    """
+
+    holes_mask = identify_binary_holes(area_mask)
+    component_count, labels, stats, _ = cv2.connectedComponentsWithStats(holes_mask, connectivity=8)
+    filled_mask = area_mask.copy()
+    rescued_hole_mask = np.zeros_like(area_mask)
+    rescued_coverages: list[float] = []
+    min_coverage = float(np.clip(min_weak_coverage, 0.0, 1.0))
+    max_area = max(0, int(max_hole_area))
+    image_height, image_width = area_mask.shape
+
+    for component_label in range(1, component_count):
+        x = int(stats[component_label, cv2.CC_STAT_LEFT])
+        y = int(stats[component_label, cv2.CC_STAT_TOP])
+        width = int(stats[component_label, cv2.CC_STAT_WIDTH])
+        height = int(stats[component_label, cv2.CC_STAT_HEIGHT])
+        hole_area = int(stats[component_label, cv2.CC_STAT_AREA])
+
+        if hole_area == 0 or hole_area > max_area:
+            continue
+
+        touches_edge = touches_or_near_edge(
+            x=x,
+            y=y,
+            width=width,
+            height=height,
+            image_width=image_width,
+            image_height=image_height,
+            edge_margin=0,
+        )
+        if touches_edge:
+            continue
+
+        hole_pixels = labels == component_label
+        weak_pixel_count = int(((weak_green_mask > 0) & hole_pixels).sum())
+        weak_coverage = float(weak_pixel_count / hole_area)
+        # Keep the mean intensity calculation explicit for future QC exports.
+        _mean_green_intensity = float(green_channel[hole_pixels].mean())
+
+        if weak_coverage >= min_coverage:
+            filled_mask[hole_pixels] = 255
+            rescued_hole_mask[hole_pixels] = 255
+            rescued_coverages.append(weak_coverage)
+
+    return filled_mask, rescued_hole_mask, rescued_coverages
+
+
 def fill_binary_holes(binary_mask: np.ndarray) -> np.ndarray:
     """
     Fill enclosed holes in a binary mask using OpenCV flood fill.
@@ -370,19 +490,25 @@ def analyze_blue_nuclei(
 def analyze_green_cytoskeleton_area(
     image_rgb: np.ndarray,
     threshold_mode: str = "manual",
-    manual_threshold: int = 25,
+    manual_threshold: int = 20,
     gaussian_kernel: int = 3,
     use_background_subtraction: bool = True,
-    background_kernel: int = 71,
+    background_kernel: int = 51,
     morph_open_kernel: int = 0,
     fiber_close_kernel: int = 5,
-    area_dilation_kernel: int = 17,
+    area_dilation_kernel: int = 13,
     area_close_kernel: int = 35,
-    fill_holes: bool = True,
-    area_smoothing_kernel: int = 15,
-    min_area: int = 20000,
+    fill_holes: bool = False,
+    area_smoothing_kernel: int = 9,
+    min_area: int = 15000,
     exclude_edge_regions: bool = False,
     edge_margin: int = 5,
+    enable_weak_green_rescue: bool = True,
+    weak_green_threshold: int = 15,
+    weak_signal_connection_radius: int = 13,
+    minimum_weak_coverage_inside_hole: float = 0.10,
+    max_hole_area_to_rescue: int = 50000,
+    fill_only_holes_with_green_evidence: bool = True,
 ) -> dict[str, np.ndarray | pd.DataFrame | dict[str, float | int]]:
     """
     Detect green cytoskeleton fibers and estimate larger cell-covered areas.
@@ -419,13 +545,42 @@ def analyze_green_cytoskeleton_area(
         close_kernel_size=fiber_close_kernel,
     )
 
+    if enable_weak_green_rescue:
+        weak_green_mask = create_weak_green_mask(green_channel, weak_green_threshold)
+        rescued_weak_mask = rescue_weak_signal_near_fibers(
+            weak_green_mask=weak_green_mask,
+            strong_fiber_mask=cytoskeleton_fiber_mask,
+            connection_radius=weak_signal_connection_radius,
+        )
+        area_seed_mask = cv2.bitwise_or(cytoskeleton_fiber_mask, rescued_weak_mask)
+    else:
+        weak_green_mask = np.zeros_like(cytoskeleton_fiber_mask)
+        rescued_weak_mask = np.zeros_like(cytoskeleton_fiber_mask)
+        area_seed_mask = cytoskeleton_fiber_mask.copy()
+
     estimated_area_mask = estimate_cell_area_from_fibers(
-        cytoskeleton_fiber_mask=cytoskeleton_fiber_mask,
+        cytoskeleton_fiber_mask=area_seed_mask,
         dilation_kernel_size=area_dilation_kernel,
         close_kernel_size=area_close_kernel,
         fill_holes=fill_holes,
         smoothing_kernel_size=area_smoothing_kernel,
     )
+
+    if enable_weak_green_rescue and fill_only_holes_with_green_evidence and not fill_holes:
+        estimated_area_mask, rescued_hole_mask, rescued_hole_coverages = (
+            selectively_fill_weak_green_holes(
+                area_mask=estimated_area_mask,
+                green_channel=green_channel,
+                weak_green_mask=weak_green_mask,
+                min_weak_coverage=minimum_weak_coverage_inside_hole,
+                max_hole_area=max_hole_area_to_rescue,
+            )
+        )
+    else:
+        rescued_hole_mask = np.zeros_like(estimated_area_mask)
+        rescued_hole_coverages: list[float] = []
+
+    total_rescue_mask = cv2.bitwise_or(rescued_weak_mask, rescued_hole_mask)
 
     component_count, labels, stats, centroids = cv2.connectedComponentsWithStats(
         estimated_area_mask,
@@ -434,11 +589,24 @@ def analyze_green_cytoskeleton_area(
 
     filtered_area_mask = np.zeros_like(estimated_area_mask)
     overlay_fibers = make_cytoskeleton_overlay(rgb_uint8, cytoskeleton_fiber_mask)
+    overlay_weak_rescue = make_weak_rescue_overlay(rgb_uint8, total_rescue_mask)
     overlay_estimated_area = rgb_uint8.copy()
     image_height, image_width = estimated_area_mask.shape
     records: list[dict[str, float | int | bool]] = []
     accepted_annotations: list[tuple[np.ndarray, int, float, float]] = []
     region_id = 1
+    rescued_hole_component_count, rescued_hole_labels, _, _ = cv2.connectedComponentsWithStats(
+        rescued_hole_mask,
+        connectivity=8,
+    )
+    rescued_hole_coverage_by_label: dict[int, float] = {}
+    for hole_label in range(1, rescued_hole_component_count):
+        hole_pixels = rescued_hole_labels == hole_label
+        hole_area = int(hole_pixels.sum())
+        weak_count = int(((weak_green_mask > 0) & hole_pixels).sum())
+        rescued_hole_coverage_by_label[hole_label] = (
+            float(weak_count / hole_area) if hole_area else 0.0
+        )
 
     for component_label in range(1, component_count):
         x = int(stats[component_label, cv2.CC_STAT_LEFT])
@@ -469,6 +637,19 @@ def analyze_green_cytoskeleton_area(
         fiber_pixels_inside_region = (cytoskeleton_fiber_mask > 0) & region_pixels
         fiber_pixel_area = int(fiber_pixels_inside_region.sum())
         coverage_ratio = float(fiber_pixel_area / area) if area else 0.0
+        rescued_area_inside_region = int(((total_rescue_mask > 0) & region_pixels).sum())
+        region_hole_labels = np.unique(rescued_hole_labels[region_pixels])
+        region_hole_labels = region_hole_labels[region_hole_labels > 0]
+        rescued_hole_count = int(len(region_hole_labels))
+        region_rescued_hole_coverages = [
+            rescued_hole_coverage_by_label[int(hole_label)]
+            for hole_label in region_hole_labels
+        ]
+        mean_rescued_hole_coverage = (
+            float(np.mean(region_rescued_hole_coverages))
+            if region_rescued_hole_coverages
+            else 0.0
+        )
 
         filtered_area_mask[region_pixels] = 255
 
@@ -491,6 +672,9 @@ def analyze_green_cytoskeleton_area(
                 "Integrated_Green_Intensity_Inside_Area": round(integrated_green, 2),
                 "Cytoskeleton_Fiber_Pixel_Area_Inside_Region": fiber_pixel_area,
                 "Cytoskeleton_Coverage_Ratio": round(coverage_ratio, 4),
+                "Rescued_Weak_Green_Area_px": rescued_area_inside_region,
+                "Rescued_Hole_Count": rescued_hole_count,
+                "Mean_Weak_Coverage_In_Rescued_Holes": round(mean_rescued_hole_coverage, 4),
                 "Is_Edge_Region": bool(is_edge_region),
             }
         )
@@ -522,9 +706,13 @@ def analyze_green_cytoskeleton_area(
         "green_channel_display": green_channel,
         "green_enhanced": green_enhanced,
         "raw_fiber_mask": raw_fiber_mask,
+        "weak_green_mask": weak_green_mask,
+        "rescued_weak_mask": rescued_weak_mask,
+        "rescued_hole_mask": rescued_hole_mask,
         "cytoskeleton_fiber_mask": cytoskeleton_fiber_mask,
         "estimated_cell_area_mask": filtered_area_mask,
         "overlay_fibers": overlay_fibers,
+        "overlay_weak_rescue": overlay_weak_rescue,
         "overlay_estimated_area": overlay_estimated_area,
         "results_dataframe": results_dataframe,
         "summary_metrics": summary_metrics,
@@ -600,6 +788,24 @@ def make_cytoskeleton_overlay(rgb_image: np.ndarray, cytoskeleton_mask: np.ndarr
     return overlay
 
 
+def make_weak_rescue_overlay(rgb_image: np.ndarray, rescue_mask: np.ndarray) -> np.ndarray:
+    """Create an RGB overlay for weak green signal rescued into area estimates."""
+
+    overlay = blend_mask_color(
+        rgb_image,
+        rescue_mask,
+        color_rgb=(0, 220, 255),
+        alpha=0.55,
+    )
+    contours, _ = cv2.findContours(
+        (rescue_mask > 0).astype(np.uint8) * 255,
+        cv2.RETR_EXTERNAL,
+        cv2.CHAIN_APPROX_SIMPLE,
+    )
+    cv2.drawContours(overlay, contours, contourIdx=-1, color=(0, 255, 255), thickness=1)
+    return overlay
+
+
 def draw_area_annotation(
     overlay_rgb: np.ndarray,
     region_mask: np.ndarray,
@@ -660,6 +866,9 @@ def green_statistics_columns() -> list[str]:
         "Integrated_Green_Intensity_Inside_Area",
         "Cytoskeleton_Fiber_Pixel_Area_Inside_Region",
         "Cytoskeleton_Coverage_Ratio",
+        "Rescued_Weak_Green_Area_px",
+        "Rescued_Hole_Count",
+        "Mean_Weak_Coverage_In_Rescued_Holes",
         "Is_Edge_Region",
     ]
 
@@ -675,10 +884,15 @@ def summarize_green_results(dataframe: pd.DataFrame) -> dict[str, float | int]:
             "total_cytoskeleton_fiber_pixel_area_px": 0,
             "mean_green_intensity_inside_estimated_areas": 0.0,
             "cytoskeleton_coverage_ratio": 0.0,
+            "rescued_weak_green_area_px": 0,
+            "rescued_hole_count": 0,
+            "mean_weak_coverage_of_rescued_holes": 0.0,
         }
 
     total_area = int(dataframe["Estimated_Cell_Area_px"].sum())
     total_fiber_area = int(dataframe["Cytoskeleton_Fiber_Pixel_Area_Inside_Region"].sum())
+    rescued_hole_count = int(dataframe["Rescued_Hole_Count"].sum())
+    rescued_hole_rows = dataframe[dataframe["Rescued_Hole_Count"] > 0]
 
     return {
         "regions_count": int(len(dataframe)),
@@ -690,6 +904,18 @@ def summarize_green_results(dataframe: pd.DataFrame) -> dict[str, float | int]:
         ),
         "cytoskeleton_coverage_ratio": (
             float(total_fiber_area / total_area) if total_area else 0.0
+        ),
+        "rescued_weak_green_area_px": int(dataframe["Rescued_Weak_Green_Area_px"].sum()),
+        "rescued_hole_count": rescued_hole_count,
+        "mean_weak_coverage_of_rescued_holes": (
+            float(
+                np.average(
+                    rescued_hole_rows["Mean_Weak_Coverage_In_Rescued_Holes"],
+                    weights=rescued_hole_rows["Rescued_Hole_Count"],
+                )
+            )
+            if rescued_hole_count
+            else 0.0
         ),
     }
 
